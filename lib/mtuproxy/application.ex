@@ -6,7 +6,9 @@ defmodule Mtuproxy.Application do
   use Application
 
   def start(_type, _args) do
-    port = read_integer_env("PROXY_PORT") || 8080
+    port = read_integer_env("PROXY_PORT") || 443
+
+    Logger.configure(level: :error)
 
     children = [
       # Starts a worker by calling: Mtuproxy.Worker.start_link(arg)

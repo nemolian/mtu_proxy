@@ -23,92 +23,6 @@ defmodule Mtuproxy.Utils do
     end
   end
 
-  def verify_cert(_host, _socket) do
-    # {:ok, der} = Socket.SSL.certificate(socket)
-    # {:ok, cert} = X509.Certificate.from_der(der)
-
-    # TODO: Implement verification
-
-    :ok
-  end
-
-  @doc """
-  Loads the existing or creates a new CA authority.
-  """
-  def load_ca(path \\ "", name \\ "ca") do
-    if File.exists?(Path.join(path, "#{name}.pem")) do
-      Logger.info("CA cert will load from disk...")
-
-      {:ca, pem_file!(Path.join(path, "#{name}.pem"), :cert),
-       pem_file!(Path.join(path, "#{name}_key.pem"), :key)}
-    else
-      Logger.warn("CA cert not found on disk, Creating a new one...")
-      ca_key = X509.PrivateKey.new_ec(:secp256r1)
-
-      ca =
-        X509.Certificate.self_signed(
-          ca_key,
-          "/C=US/ST=CA/L=San Francisco/O=Acme/CN=ECDSA Root CA",
-          template: :root_ca
-        )
-
-      File.write!(Path.join(path, "#{name}.pem"), X509.Certificate.to_pem(ca))
-      File.write!(Path.join(path, "#{name}_key.pem"), X509.PrivateKey.to_pem(ca_key))
-      # crt file for windows users
-      File.write!(Path.join(path, "#{name}.crt"), X509.Certificate.to_der(ca))
-
-      {:ca, ca, ca_key}
-    end
-  end
-
-  @doc """
-  Read a pem encoded certificate.
-  """
-  def pem_file!(filename, :cert) do
-    filename
-    |> File.read!()
-    |> X509.Certificate.from_pem!()
-  end
-
-  @doc """
-  Read a pem encoded key.
-  """
-  def pem_file!(filename, :key) do
-    filename
-    |> File.read!()
-    |> X509.PrivateKey.from_pem!()
-  end
-
-  @doc """
-  Returns an existing certificate or creates a new one with given subject.
-  """
-  def get_or_create_cert({:ca, ca, ca_key}, subject) do
-    if File.exists?("cache/#{subject}.der") do
-      Logger.debug("Loading cert from disk #{subject}")
-      {:ok, File.read!("cache/#{subject}.der"), File.read!("cache/#{subject}_key.der")}
-    else
-      Logger.debug("Creating new cert for #{subject}")
-      key = X509.PrivateKey.new_ec(:secp256r1)
-
-      cert =
-        key
-        |> X509.PublicKey.derive()
-        |> X509.Certificate.new("/C=US/ST=CA/L=San Francisco/O=Acme/CN=Sample", ca, ca_key,
-          extensions: [subject_alt_name: X509.Certificate.Extension.subject_alt_name([subject])]
-        )
-
-      key_der = X509.PrivateKey.to_der(key)
-      cert_der = X509.Certificate.to_der(cert)
-
-      File.write!("cache/#{subject}.der", cert_der)
-      File.write!("cache/#{subject}_key.der", key_der)
-
-      Logger.debug("Spoofed cert for #{subject}")
-
-      {:ok, cert_der, key_der}
-    end
-  end
-
   @doc """
   Stream data from src socket to dst socket.
   """
@@ -123,32 +37,9 @@ defmodule Mtuproxy.Utils do
   end
 
   @doc """
-  Stream SSL data from src to dst.
+  Streams a tcp source socket to the destination until error happens in
+  the recv/3 or send/2.
   """
-  def ssl_stream(dst, src) do
-    data =
-      case src do
-        {:sslsocket, _, _} ->
-          Socket.Stream.recv!(src)
-
-        _ ->
-          {:ok, data} = :ssl.recv(src, 0, 5000)
-          data
-      end
-
-    if not is_nil(data) do
-      case dst do
-        {:sslsocket, _, _} ->
-          Socket.Stream.send!(dst, data)
-
-        _ ->
-          :ok = :ssl.send(dst, data)
-      end
-
-      ssl_stream(dst, src)
-    end
-  end
-
   def tcp_stream(dst, src, opts \\ []) do
     with {:ok, data} when not is_nil(data) <- :gen_tcp.recv(src, opts[:mtu] || 0, 30_000),
          :ok <- :gen_tcp.send(dst, data) do
@@ -164,11 +55,66 @@ defmodule Mtuproxy.Utils do
       {:ok, <<"CONNECT ", rest::binary>>} ->
         [target | _] = String.split(rest, " ")
         [host, port] = String.split(target, ":")
-        {:ok, :ssl, host, String.to_integer(port)}
+        {:ok, :ssl, host, String.to_integer(String.replace(port, "/", ""))}
+
+      {:ok,
+       <<22, 3, 1, _size::integer-16, _, _handshake_size::integer-24, _, _, _rnd::binary-32,
+         rest::binary>> = hello} ->
+        host =
+          rest
+          # SESSION ID
+          |> skip_ssl_property_8()
+          # CIPHERS
+          |> skip_ssl_property_16()
+          # COMPRESSION
+          |> skip_ssl_property_8()
+          # Extensions
+          |> take_ssl_property_16()
+          |> find_server_name_extension()
+
+        {:ok, :ssl_direct, host, hello}
 
       {:ok, http_data} ->
         {:ok, :http, http_data}
+
+      {:error, _} ->
+        :error
     end
+  end
+
+  defp find_server_name_extension(
+         <<0, 0, _, _, _, _, _, host_size::unsigned-integer-16, rest::binary>>
+       ) do
+    <<host::binary-size(host_size), _::binary>> = rest
+    host
+  end
+
+  defp find_server_name_extension(<<type::binary-2, rest::binary>>) do
+    Logger.debug("NOSNI: #{inspect(type)} #{inspect(rest)}")
+
+    rest
+    |> skip_ssl_property_16()
+    |> find_server_name_extension()
+  end
+
+  defp find_server_name_extension(bad) do
+    # raise "Bad SNI: #{inspect(bad)}"
+    "www.google.com"
+  end
+
+  defp skip_ssl_property_16(<<size::unsigned-integer-16, rest::binary>>) do
+    <<_skip::binary-size(size), cut::binary>> = rest
+    cut
+  end
+
+  defp skip_ssl_property_8(<<size::unsigned-integer-8, rest::binary>>) do
+    <<_skip::binary-size(size), cut::binary>> = rest
+    cut
+  end
+
+  defp take_ssl_property_16(<<size::unsigned-integer-16, rest::binary>>) do
+    <<take::binary-size(size), _skip::binary>> = rest
+    take
   end
 
   def connect_ssl_remote(host, port, opts \\ []) do
@@ -179,7 +125,7 @@ defmodule Mtuproxy.Utils do
     end
   end
 
-  def connect_tcp_remote(host, port, opts \\ []) do
+  def connect_tcp_remote(host, port, _opts \\ []) do
     Socket.TCP.connect(host, port)
   end
 
