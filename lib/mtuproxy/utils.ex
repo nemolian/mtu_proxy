@@ -5,21 +5,22 @@ defmodule Mtuproxy.Utils do
 
   require Logger
 
+  @cache_name :dns_cache
+  @max_ttl 3 * 60 * 60 * 1000
+
   @doc """
   Resolves a DNS A record securely.
   """
   def secure_arecord_resolve!(host) do
-    cache = Application.get_env(:mtuproxy, :resolve_cache, %{})
+    case Cachex.get(@cache_name, host) do
+      {:ok, nil} ->
+        {:ok, ip, ttl} = resolve_dns!(host)
+        {:ok, _} = Cachex.put(@cache_name, host, ip, ttl: min(ttl * 1000, @max_ttl))
+        ip
 
-    case cache[host] do
-      nil ->
-        dns = resolve_dns!(host)
-        Application.put_env(:mtuproxy, :resolve_cache, Map.put(cache, host, dns))
-        dns
-
-      dns ->
-        Logger.debug("Cached #{host}")
-        dns
+      {:ok, ip} ->
+        Logger.debug("Cached #{host} #{ip}")
+        ip
     end
   end
 
@@ -58,7 +59,7 @@ defmodule Mtuproxy.Utils do
         {:ok, :ssl, host, String.to_integer(String.replace(port, "/", ""))}
 
       {:ok,
-       <<22, 3, 1, _size::integer-16, _, _handshake_size::integer-24, _, _, _rnd::binary-32,
+       <<22, 3, 1, _size::integer-16, 1, _handshake_size::binary-3, _, _, _rnd::binary-32,
          rest::binary>> = hello} ->
         host =
           rest
@@ -98,8 +99,7 @@ defmodule Mtuproxy.Utils do
   end
 
   defp find_server_name_extension(bad) do
-    # raise "Bad SNI: #{inspect(bad)}"
-    "www.google.com"
+    raise "Bad SNI: #{inspect(bad)}"
   end
 
   defp skip_ssl_property_16(<<size::unsigned-integer-16, rest::binary>>) do
@@ -138,9 +138,9 @@ defmodule Mtuproxy.Utils do
            accept: "application/dns-json"
          ) do
       {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
-        host_ip = Jason.decode!(body)["Answer"] |> List.last() |> Map.fetch!("data")
+        %{"data" => host_ip, "TTL" => ttl} = Jason.decode!(body)["Answer"] |> List.last()
         Logger.debug("RESOLVER #{host} => #{host_ip}")
-        host_ip
+        {:ok, host_ip, ttl}
 
       error ->
         raise "Name not resolved #{inspect(error)}"

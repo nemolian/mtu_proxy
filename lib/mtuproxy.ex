@@ -22,7 +22,9 @@ defmodule Mtuproxy do
         active: false,
         packet: :raw,
         reuseaddr: true,
-        backlog: 1000
+        backlog: 200,
+        delay_send: false,
+        nodelay: true
       ])
 
     Logger.info("Accepting connections on port #{port}")
@@ -50,7 +52,7 @@ defmodule Mtuproxy do
           tasks =
             Task.yield_many(
               [
-                Task.async(fn -> tcp_stream(remote, request, mtu: 100) end),
+                Task.async(fn -> tcp_stream(remote, request, mtu: 30) end),
                 Task.async(fn -> tcp_stream(request, remote) end)
               ],
               @socket_timeout

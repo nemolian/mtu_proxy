@@ -12,7 +12,8 @@ defmodule Mtuproxy.Application do
 
     children = [
       # Starts a worker by calling: Mtuproxy.Worker.start_link(arg)
-      {Mtuproxy, port: port}
+      {Mtuproxy, port: port},
+      %{id: :dns_cache_id, start: {Cachex, :start_link, [:dns_cache, []]}}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

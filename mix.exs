@@ -27,7 +27,7 @@ defmodule Mtuproxy.MixProject do
       {:httpoison, "~> 1.5"},
       {:jason, "~> 1.1"},
       {:socket, "~> 0.3"},
-      {:x509, "~> 0.7"}
+      {:cachex, "~> 3.2"}
     ]
   end
 end
