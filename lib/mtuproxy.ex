@@ -9,7 +9,7 @@ defmodule Mtuproxy do
 
   # Timeout of 20 minutes per connection
   @socket_timeout 20 * 60 * 1000
-  @host_extractor_regex ~r/^[A-Z]+ http:\/\/([A-Za-z.]+):?([0-9]+)?/
+  @host_extractor_regex ~r/^[A-Z]+ http:\/\/([A-Za-z0-9.\-]+):?([0-9]+)?/
 
   def child_spec(opts) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}

@@ -7,20 +7,26 @@ defmodule Mtuproxy.Utils do
 
   @cache_name :dns_cache
   @max_ttl 3 * 60 * 60 * 1000
+  @re_ip ~r/^\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3}$/
 
   @doc """
   Resolves a DNS A record securely.
   """
-  def secure_arecord_resolve!(host) do
-    case Cachex.get(@cache_name, host) do
-      {:ok, nil} ->
-        {:ok, ip, ttl} = resolve_dns!(host)
-        {:ok, _} = Cachex.put(@cache_name, host, ip, ttl: min(ttl * 1000, @max_ttl))
-        ip
 
-      {:ok, ip} ->
-        Logger.debug("Cached #{host} #{ip}")
-        ip
+  def secure_arecord_resolve!(host) do
+    if Regex.match?(@re_ip, host) do
+      host
+    else
+      case Cachex.get(@cache_name, host) do
+        {:ok, nil} ->
+          {:ok, ip, ttl} = resolve_dns!(host)
+          {:ok, _} = Cachex.put(@cache_name, host, ip, ttl: min(ttl * 1000, @max_ttl))
+          ip
+
+        {:ok, ip} ->
+          Logger.debug("Cached #{host} #{ip}")
+          ip
+      end
     end
   end
 
